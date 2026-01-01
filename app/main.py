@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.database import get_db
@@ -91,19 +91,19 @@ app = FastAPI(
 
 
 @app.post("/users", response_model=schemas.UserResponse, status_code=201, tags=["Users"])
-def create_user(
+async def create_user(
     user: schemas.UserCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    return crud.create_user(db, user_data=user)
+    return await crud.create_user(db, user_data=user)
 
 
 @app.get("/users", response_model=schemas.PaginatedUsers, tags=["Users"])
-def list_users(
+async def list_users(
     params: schemas.UserQueryParams = Depends(get_user_query_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    users, total = crud.get_users(db, params)
+    users, total = await crud.get_users(db, params)
     return {
         "items": users,
         "total": total,
@@ -114,27 +114,27 @@ def list_users(
 
 
 @app.get("/users/{user_id}", response_model=schemas.UserResponse, tags=["Users"])
-def get_user(user_id: int, db: Session = Depends(get_db)):
-    user = crud.get_user(db, user_id)
+async def get_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await crud.get_user(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
 
 @app.get("/users/{user_id}/with-products", response_model=schemas.UserWithProducts, tags=["Users"])
-def get_user_with_products(user_id: int, db: Session = Depends(get_db)):
-    user = crud.get_user_with_products(db, user_id)
+async def get_user_with_products(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await crud.get_user_with_products(db, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
 
 @app.get("/users/with-products/all", response_model=schemas.PaginatedUsers, tags=["Users"])
-def list_users_with_products(
+async def list_users_with_products(
     params: schemas.PaginationQueryParams = Depends(get_pagination_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    users, total = crud.get_users_with_products(db, params)
+    users, total = await crud.get_users_with_products(db, params)
     return {
         "items": users,
         "total": total,
@@ -144,20 +144,36 @@ def list_users_with_products(
     }
 
 
+@app.delete("/users/{user_id}", response_model=schemas.UserResponse, tags=["Users"])
+async def soft_delete_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await crud.soft_delete_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found or already deleted")
+    return user
+
+
+@app.post("/users/{user_id}/restore", response_model=schemas.UserResponse, tags=["Users"])
+async def restore_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    user = await crud.restore_user(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found or not deleted")
+    return user
+
+
 @app.post("/products", response_model=schemas.ProductResponse, status_code=201, tags=["Products"])
-def create_product(
+async def create_product(
     product: schemas.ProductCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    return crud.create_product(db, product_data=product)
+    return await crud.create_product(db, product_data=product)
 
 
 @app.get("/products", response_model=schemas.PaginatedProducts, tags=["Products"])
-def list_products(
+async def list_products(
     params: schemas.ProductQueryParams = Depends(get_product_query_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    products, total = crud.get_products(db, params)
+    products, total = await crud.get_products(db, params)
     return {
         "items": products,
         "total": total,
@@ -168,48 +184,48 @@ def list_products(
 
 
 @app.get("/products/{product_id}", response_model=schemas.ProductResponse, tags=["Products"])
-def get_product(
+async def get_product(
     product_id: int,
     include_deleted: bool = Query(False, description="Include soft-deleted product"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    product = crud.get_product(db, product_id, include_deleted=include_deleted)
+    product = await crud.get_product(db, product_id, include_deleted=include_deleted)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
 
 @app.get("/products/{product_id}/with-owner", response_model=schemas.ProductWithOwner, tags=["Products"])
-def get_product_with_owner(product_id: int, db: Session = Depends(get_db)):
-    product = crud.get_product_with_owner(db, product_id)
+async def get_product_with_owner(product_id: int, db: AsyncSession = Depends(get_db)):
+    product = await crud.get_product_with_owner(db, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
 
 @app.get("/products/{product_id}/with-categories", response_model=schemas.ProductWithCategories, tags=["Products"])
-def get_product_with_categories(product_id: int, db: Session = Depends(get_db)):
-    product = crud.get_product_with_categories(db, product_id)
+async def get_product_with_categories(product_id: int, db: AsyncSession = Depends(get_db)):
+    product = await crud.get_product_with_categories(db, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
 
 @app.get("/products/{product_id}/full", response_model=schemas.ProductFull, tags=["Products"])
-def get_product_full(product_id: int, db: Session = Depends(get_db)):
-    product = crud.get_product_full(db, product_id)
+async def get_product_full(product_id: int, db: AsyncSession = Depends(get_db)):
+    product = await crud.get_product_full(db, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
 
 @app.get("/products/with-owner/all", response_model=schemas.PaginatedProducts, tags=["Products"])
-def list_products_with_owner(
+async def list_products_with_owner(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    products, total = crud.get_products_with_owner(db, skip=skip, limit=limit)
+    products, total = await crud.get_products_with_owner(db, skip=skip, limit=limit)
     return {
         "items": products,
         "total": total,
@@ -220,12 +236,12 @@ def list_products_with_owner(
 
 
 @app.get("/products/with-categories/all", response_model=schemas.PaginatedProducts, tags=["Products"])
-def list_products_with_categories(
+async def list_products_with_categories(
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    products, total = crud.get_products_with_categories(db, skip=skip, limit=limit)
+    products, total = await crud.get_products_with_categories(db, skip=skip, limit=limit)
     return {
         "items": products,
         "total": total,
@@ -236,47 +252,47 @@ def list_products_with_categories(
 
 
 @app.put("/products/{product_id}", response_model=schemas.ProductResponse, tags=["Products"])
-def update_product(
+async def update_product(
     product_id: int,
     product_update: schemas.ProductUpdate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    product = crud.update_product(db, product_id, product_update=product_update)
+    product = await crud.update_product(db, product_id, product_update=product_update)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
 
 
 @app.delete("/products/{product_id}", response_model=schemas.ProductResponse, tags=["Products"])
-def soft_delete_product(product_id: int, db: Session = Depends(get_db)):
-    product = crud.soft_delete_product(db, product_id)
+async def soft_delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
+    product = await crud.soft_delete_product(db, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found or already deleted")
     return product
 
 
 @app.post("/products/{product_id}/restore", response_model=schemas.ProductResponse, tags=["Products"])
-def restore_product(product_id: int, db: Session = Depends(get_db)):
-    product = crud.restore_product(db, product_id)
+async def restore_product(product_id: int, db: AsyncSession = Depends(get_db)):
+    product = await crud.restore_product(db, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found or not deleted")
     return product
 
 
 @app.post("/categories", response_model=schemas.CategoryResponse, status_code=201, tags=["Categories"])
-def create_category(
+async def create_category(
     category: schemas.CategoryCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    return crud.create_category(db, category_data=category)
+    return await crud.create_category(db, category_data=category)
 
 
 @app.get("/categories", response_model=schemas.PaginatedCategories, tags=["Categories"])
-def list_categories(
+async def list_categories(
     params: schemas.CategoryQueryParams = Depends(get_category_query_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    categories, total = crud.get_categories(db, params)
+    categories, total = await crud.get_categories(db, params)
     return {
         "items": categories,
         "total": total,
@@ -287,27 +303,27 @@ def list_categories(
 
 
 @app.get("/categories/{category_id}", response_model=schemas.CategoryResponse, tags=["Categories"])
-def get_category(category_id: int, db: Session = Depends(get_db)):
-    category = crud.get_category(db, category_id)
+async def get_category(category_id: int, db: AsyncSession = Depends(get_db)):
+    category = await crud.get_category(db, category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
     return category
 
 
 @app.get("/categories/{category_id}/with-products", response_model=schemas.CategoryWithProducts, tags=["Categories"])
-def get_category_with_products(category_id: int, db: Session = Depends(get_db)):
-    category = crud.get_category_with_products(db, category_id)
+async def get_category_with_products(category_id: int, db: AsyncSession = Depends(get_db)):
+    category = await crud.get_category_with_products(db, category_id)
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
     return category
 
 
 @app.get("/categories/with-products/all", response_model=schemas.PaginatedCategories, tags=["Categories"])
-def list_categories_with_products(
+async def list_categories_with_products(
     params: schemas.PaginationQueryParams = Depends(get_pagination_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    categories, total = crud.get_categories_with_products(db, params)
+    categories, total = await crud.get_categories_with_products(db, params)
     return {
         "items": categories,
         "total": total,
@@ -317,20 +333,36 @@ def list_categories_with_products(
     }
 
 
+@app.delete("/categories/{category_id}", response_model=schemas.CategoryResponse, tags=["Categories"])
+async def soft_delete_category(category_id: int, db: AsyncSession = Depends(get_db)):
+    category = await crud.soft_delete_category(db, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found or already deleted")
+    return category
+
+
+@app.post("/categories/{category_id}/restore", response_model=schemas.CategoryResponse, tags=["Categories"])
+async def restore_category(category_id: int, db: AsyncSession = Depends(get_db)):
+    category = await crud.restore_category(db, category_id)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found or not deleted")
+    return category
+
+
 @app.post("/orders", response_model=schemas.OrderResponse, status_code=201, tags=["Orders"])
-def create_order(
+async def create_order(
     order: schemas.OrderCreate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    return crud.create_order(db, order_data=order)
+    return await crud.create_order(db, order_data=order)
 
 
 @app.get("/orders", response_model=schemas.PaginatedOrders, tags=["Orders"])
-def list_orders(
+async def list_orders(
     params: schemas.OrderQueryParams = Depends(get_order_query_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    orders, total = crud.get_orders(db, params)
+    orders, total = await crud.get_orders(db, params)
     return {
         "items": orders,
         "total": total,
@@ -341,43 +373,43 @@ def list_orders(
 
 
 @app.get("/orders/{order_id}", response_model=schemas.OrderResponse, tags=["Orders"])
-def get_order(order_id: int, db: Session = Depends(get_db)):
-    order = crud.get_order(db, order_id)
+async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.get_order(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.get("/orders/{order_id}/with-items", response_model=schemas.OrderWithItems, tags=["Orders"])
-def get_order_with_items(order_id: int, db: Session = Depends(get_db)):
-    order = crud.get_order_with_items(db, order_id)
+async def get_order_with_items(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.get_order_with_items(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.get("/orders/{order_id}/with-items-and-products", response_model=schemas.OrderWithItemsAndProducts, tags=["Orders"])
-def get_order_with_items_and_products(order_id: int, db: Session = Depends(get_db)):
-    order = crud.get_order_with_items_and_products(db, order_id)
+async def get_order_with_items_and_products(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.get_order_with_items_and_products(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.get("/orders/{order_id}/full", response_model=schemas.OrderFull, tags=["Orders"])
-def get_order_full(order_id: int, db: Session = Depends(get_db)):
-    order = crud.get_order_full(db, order_id)
+async def get_order_full(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.get_order_full(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.get("/orders/with-items/all", response_model=schemas.PaginatedOrders, tags=["Orders"])
-def list_orders_with_items(
+async def list_orders_with_items(
     params: schemas.PaginationQueryParams = Depends(get_pagination_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    orders, total = crud.get_orders_with_items(db, params)
+    orders, total = await crud.get_orders_with_items(db, params)
     return {
         "items": orders,
         "total": total,
@@ -388,11 +420,11 @@ def list_orders_with_items(
 
 
 @app.get("/orders/with-items-and-products/all", response_model=schemas.PaginatedOrders, tags=["Orders"])
-def list_orders_with_items_and_products(
+async def list_orders_with_items_and_products(
     params: schemas.PaginationQueryParams = Depends(get_pagination_params),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    orders, total = crud.get_orders_with_items_and_products(db, params)
+    orders, total = await crud.get_orders_with_items_and_products(db, params)
     return {
         "items": orders,
         "total": total,
@@ -403,41 +435,41 @@ def list_orders_with_items_and_products(
 
 
 @app.put("/orders/{order_id}", response_model=schemas.OrderResponse, tags=["Orders"])
-def update_order(
+async def update_order(
     order_id: int,
     order_update: schemas.OrderUpdate,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    order = crud.update_order(db, order_id, order_update=order_update)
+    order = await crud.update_order(db, order_id, order_update=order_update)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return order
 
 
 @app.delete("/orders/{order_id}", response_model=schemas.OrderResponse, tags=["Orders"])
-def soft_delete_order(order_id: int, db: Session = Depends(get_db)):
-    order = crud.soft_delete_order(db, order_id)
+async def soft_delete_order(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.soft_delete_order(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found or already deleted")
     return order
 
 
 @app.post("/orders/{order_id}/restore", response_model=schemas.OrderResponse, tags=["Orders"])
-def restore_order(order_id: int, db: Session = Depends(get_db)):
-    order = crud.restore_order(db, order_id)
+async def restore_order(order_id: int, db: AsyncSession = Depends(get_db)):
+    order = await crud.restore_order(db, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found or not deleted")
     return order
 
 
 @app.get("/users/{user_id}/orders", response_model=schemas.PaginatedOrders, tags=["Users", "Orders"])
-def get_user_orders(
+async def get_user_orders(
     user_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    orders, total = crud.get_user_orders(db, user_id, skip=skip, limit=limit)
+    orders, total = await crud.get_user_orders(db, user_id, skip=skip, limit=limit)
     return {
         "items": orders,
         "total": total,
@@ -448,13 +480,13 @@ def get_user_orders(
 
 
 @app.get("/products/{product_id}/orders", response_model=schemas.PaginatedOrders, tags=["Products", "Orders"])
-def get_product_orders(
+async def get_product_orders(
     product_id: int,
     skip: int = Query(0, ge=0),
     limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
-    orders, total = crud.get_product_orders(db, product_id, skip=skip, limit=limit)
+    orders, total = await crud.get_product_orders(db, product_id, skip=skip, limit=limit)
     return {
         "items": orders,
         "total": total,

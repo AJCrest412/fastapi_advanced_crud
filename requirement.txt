@@ -1,6 +1,6 @@
 fastapi
-uvicorn
-sqlalchemy
+uvicorn[standard]
+sqlalchemy[asyncio]
 alembic
-pymysql
+aiomysql
 cryptography

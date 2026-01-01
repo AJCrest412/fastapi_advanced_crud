@@ -1,5 +1,6 @@
-from sqlalchemy.orm import Session, joinedload, selectinload
-from sqlalchemy import or_, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy import select, func, and_
 from typing import Optional, List
 from fastapi import HTTPException
 from datetime import datetime
@@ -7,122 +8,123 @@ from app.models import User, Product, Category, Order, OrderItem
 from app import schemas
 
 
-def filter_not_deleted(query, model_class, include_deleted: bool = False):
+def filter_not_deleted(stmt, model_class, include_deleted: bool = False):
     if not include_deleted:
-        query = query.filter(model_class.deleted_at.is_(None))
-    return query
+        stmt = stmt.where(model_class.deleted_at.is_(None))
+    return stmt
 
 
-def create_user(db: Session, user_data: schemas.UserCreate) -> User:
-    existing_user = db.query(User).filter(
+async def create_user(db: AsyncSession, user_data: schemas.UserCreate) -> User:
+    stmt = select(User).where(
         User.email == user_data.email,
         User.deleted_at.is_(None)
-    ).first()
+    )
+    result = await db.execute(stmt)
+    existing_user = result.scalar_one_or_none()
     if existing_user:
         raise HTTPException(status_code=400, detail="User with this email already exists")
     
     user = User(email=user_data.email)
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
-def get_user(db: Session, user_id: int, include_deleted: bool = False) -> Optional[User]:
-    query = db.query(User).filter(User.id == user_id)
-    query = filter_not_deleted(query, User, include_deleted)
-    return query.first()
+async def get_user(db: AsyncSession, user_id: int, include_deleted: bool = False) -> Optional[User]:
+    stmt = select(User).where(User.id == user_id)
+    stmt = filter_not_deleted(stmt, User, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_user_with_products(db: Session, user_id: int, include_deleted: bool = False) -> Optional[User]:
-    query = (
-        db.query(User)
+async def get_user_with_products(db: AsyncSession, user_id: int, include_deleted: bool = False) -> Optional[User]:
+    stmt = (
+        select(User)
         .options(selectinload(User.products))
-        .filter(User.id == user_id)
+        .where(User.id == user_id)
     )
-    query = filter_not_deleted(query, User, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, User, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_users(
-    db: Session,
+async def get_users(
+    db: AsyncSession,
     params: schemas.UserQueryParams
 ) -> tuple[List[User], int]:
-    query = db.query(User)
-    query = filter_not_deleted(query, User, params.include_deleted)
+    stmt = select(User)
+    stmt = filter_not_deleted(stmt, User, params.include_deleted)
     
     if params.email:
-        query = query.filter(User.email.ilike(f"%{params.email}%"))
+        stmt = stmt.where(User.email.ilike(f"%{params.email}%"))
     
-    total = query.count()
-    users = query.offset(params.skip).limit(params.limit).all()
+    count_stmt = select(func.count(User.id))
+    count_stmt = filter_not_deleted(count_stmt, User, params.include_deleted)
+    if params.email:
+        count_stmt = count_stmt.where(User.email.ilike(f"%{params.email}%"))
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
     
-    return users, total
+    stmt = stmt.offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    users = result.scalars().all()
+    
+    return list(users), total
 
 
-def get_users_with_products(
-    db: Session,
+async def get_users_with_products(
+    db: AsyncSession,
     params: schemas.PaginationQueryParams,
     include_deleted: bool = False
 ) -> tuple[List[User], int]:
-    query = db.query(User).options(selectinload(User.products))
-    query = filter_not_deleted(query, User, include_deleted)
-    total = query.count()
-    users = query.offset(params.skip).limit(params.limit).all()
-    return users, total
+    stmt = select(User).options(selectinload(User.products))
+    stmt = filter_not_deleted(stmt, User, include_deleted)
+    
+    count_stmt = select(func.count(User.id))
+    count_stmt = filter_not_deleted(count_stmt, User, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    users = result.scalars().all()
+    return list(users), total
 
 
-def soft_delete_user(db: Session, user_id: int) -> Optional[User]:
-    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+async def soft_delete_user(db: AsyncSession, user_id: int) -> Optional[User]:
+    stmt = select(User).where(User.id == user_id, User.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
     if not user:
         return None
     
     user.deleted_at = datetime.utcnow()
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
-def restore_user(db: Session, user_id: int) -> Optional[User]:
-    user = db.query(User).filter(User.id == user_id, User.deleted_at.isnot(None)).first()
+async def restore_user(db: AsyncSession, user_id: int) -> Optional[User]:
+    stmt = select(User).where(User.id == user_id, User.deleted_at.isnot(None))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
     if not user:
         return None
     
     user.deleted_at = None
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
-# ============ Product CRUD Operations ============
-# 
-# PATTERN: Using Pydantic Schemas Instead of Individual Parameters
-# ===============================================================
-# 
-# When functions have many parameters (5+), it's better to use Pydantic schemas:
-# 
-# ❌ BAD (Many parameters - hard to maintain):
-# def create_product(db, name, owner_id, description, price, category_ids, 
-#                    stock, sku, weight, dimensions, tags, ...):
-#     # Too many parameters!
-# 
-# ✅ GOOD (Schema object - clean and maintainable):
-# def create_product(db, product_data: schemas.ProductCreate):
-#     # Single parameter, type-safe, easy to extend
-# 
-# Benefits:
-# 1. Single parameter instead of many
-# 2. Type validation happens automatically
-# 3. Easy to add new fields (just update schema)
-# 4. Self-documenting (schema shows all fields)
-# 5. Reusable (schema used in multiple places)
-# 6. Better IDE support (autocomplete, type hints)
-#
-def create_product(
-    db: Session,
+async def create_product(
+    db: AsyncSession,
     product_data: schemas.ProductCreate
 ) -> Product:
-    owner = db.query(User).filter(User.id == product_data.owner_id).first()
+    stmt = select(User).where(User.id == product_data.owner_id)
+    result = await db.execute(stmt)
+    owner = result.scalar_one_or_none()
     if not owner:
         raise HTTPException(status_code=404, detail="Owner not found")
     
@@ -135,270 +137,317 @@ def create_product(
     )
     
     if product_data.category_ids:
-        categories = db.query(Category).filter(Category.id.in_(product_data.category_ids)).all()
+        stmt = select(Category).where(Category.id.in_(product_data.category_ids))
+        result = await db.execute(stmt)
+        categories = result.scalars().all()
         if len(categories) != len(product_data.category_ids):
             raise HTTPException(status_code=404, detail="One or more categories not found")
-        product.categories = categories
+        product.categories = list(categories)
     
     db.add(product)
-    db.commit()
-    db.refresh(product)
+    await db.commit()
+    await db.refresh(product)
     return product
 
 
-def get_product(db: Session, product_id: int, include_deleted: bool = False) -> Optional[Product]:
-    """Get a single product by ID"""
-    query = db.query(Product).filter(Product.id == product_id)
-    query = filter_not_deleted(query, Product, include_deleted)
-    return query.first()
+async def get_product(db: AsyncSession, product_id: int, include_deleted: bool = False) -> Optional[Product]:
+    stmt = select(Product).where(Product.id == product_id)
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_product_with_owner(db: Session, product_id: int, include_deleted: bool = False) -> Optional[Product]:
-    """Get product with owner loaded (many-to-one relationship)"""
-    query = (
-        db.query(Product)
+async def get_product_with_owner(db: AsyncSession, product_id: int, include_deleted: bool = False) -> Optional[Product]:
+    stmt = (
+        select(Product)
         .options(joinedload(Product.owner))
-        .filter(Product.id == product_id)
+        .where(Product.id == product_id)
     )
-    query = filter_not_deleted(query, Product, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_product_with_categories(db: Session, product_id: int, include_deleted: bool = False) -> Optional[Product]:
-    query = (
-        db.query(Product)
+async def get_product_with_categories(db: AsyncSession, product_id: int, include_deleted: bool = False) -> Optional[Product]:
+    stmt = (
+        select(Product)
         .options(selectinload(Product.categories))
-        .filter(Product.id == product_id)
+        .where(Product.id == product_id)
     )
-    query = filter_not_deleted(query, Product, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_product_full(db: Session, product_id: int, include_deleted: bool = False) -> Optional[Product]:
-    query = (
-        db.query(Product)
+async def get_product_full(db: AsyncSession, product_id: int, include_deleted: bool = False) -> Optional[Product]:
+    stmt = (
+        select(Product)
         .options(
             joinedload(Product.owner),
             selectinload(Product.categories)
         )
-        .filter(Product.id == product_id)
+        .where(Product.id == product_id)
     )
-    query = filter_not_deleted(query, Product, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_products(
-    db: Session,
+async def get_products(
+    db: AsyncSession,
     params: schemas.ProductQueryParams
 ) -> tuple[List[Product], int]:
-    query = db.query(Product)
-    query = filter_not_deleted(query, Product, params.include_deleted)
+    stmt = select(Product)
+    stmt = filter_not_deleted(stmt, Product, params.include_deleted)
     
     if params.name:
-        query = query.filter(Product.name.ilike(f"%{params.name}%"))
+        stmt = stmt.where(Product.name.ilike(f"%{params.name}%"))
     
     if params.owner_id is not None:
-        query = query.filter(Product.owner_id == params.owner_id)
+        stmt = stmt.where(Product.owner_id == params.owner_id)
     
     if params.is_active is not None:
-        query = query.filter(Product.is_active == params.is_active)
+        stmt = stmt.where(Product.is_active == params.is_active)
     
     if params.min_price is not None:
-        query = query.filter(Product.price >= params.min_price)
+        stmt = stmt.where(Product.price >= params.min_price)
     
     if params.max_price is not None:
-        query = query.filter(Product.price <= params.max_price)
+        stmt = stmt.where(Product.price <= params.max_price)
     
     if params.category_id is not None:
-        query = query.join(Product.categories).filter(Category.id == params.category_id)
+        stmt = stmt.join(Product.categories).where(Category.id == params.category_id)
     
-    total = query.count()
-    products = query.offset(params.skip).limit(params.limit).all()
+    count_stmt = select(func.count(Product.id))
+    count_stmt = filter_not_deleted(count_stmt, Product, params.include_deleted)
+    if params.name:
+        count_stmt = count_stmt.where(Product.name.ilike(f"%{params.name}%"))
+    if params.owner_id is not None:
+        count_stmt = count_stmt.where(Product.owner_id == params.owner_id)
+    if params.is_active is not None:
+        count_stmt = count_stmt.where(Product.is_active == params.is_active)
+    if params.min_price is not None:
+        count_stmt = count_stmt.where(Product.price >= params.min_price)
+    if params.max_price is not None:
+        count_stmt = count_stmt.where(Product.price <= params.max_price)
+    if params.category_id is not None:
+        count_stmt = count_stmt.join(Product.categories).where(Category.id == params.category_id)
     
-    return products, total
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    
+    return list(products), total
 
 
-def get_products_with_owner(
-    db: Session,
+async def get_products_with_owner(
+    db: AsyncSession,
     skip: int = 0,
     limit: int = 10,
     include_deleted: bool = False
 ) -> tuple[List[Product], int]:
-    """Get products with owner loaded"""
-    query = db.query(Product).options(joinedload(Product.owner))
-    query = filter_not_deleted(query, Product, include_deleted)
-    total = query.count()
-    products = query.offset(skip).limit(limit).all()
-    return products, total
+    stmt = select(Product).options(joinedload(Product.owner))
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    
+    count_stmt = select(func.count(Product.id))
+    count_stmt = await filter_not_deleted(count_stmt, Product, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    return list(products), total
 
 
-def get_products_with_categories(
-    db: Session,
+async def get_products_with_categories(
+    db: AsyncSession,
     skip: int = 0,
     limit: int = 10,
     include_deleted: bool = False
 ) -> tuple[List[Product], int]:
-    """Get products with categories loaded"""
-    query = db.query(Product).options(selectinload(Product.categories))
-    query = filter_not_deleted(query, Product, include_deleted)
-    total = query.count()
-    products = query.offset(skip).limit(limit).all()
-    return products, total
+    stmt = select(Product).options(selectinload(Product.categories))
+    stmt = filter_not_deleted(stmt, Product, include_deleted)
+    
+    count_stmt = select(func.count(Product.id))
+    count_stmt = await filter_not_deleted(count_stmt, Product, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    return list(products), total
 
 
-def update_product(
-    db: Session,
+async def update_product(
+    db: AsyncSession,
     product_id: int,
     product_update: schemas.ProductUpdate
 ) -> Optional[Product]:
-    """
-    Update a product and its categories.
-    
-    This function accepts a Pydantic schema object instead of individual parameters.
-    Benefits:
-    1. Only provided fields need to be updated (Pydantic handles None values)
-    2. Easy to extend - add fields to schema without changing function signature
-    3. Type validation happens automatically
-    4. Cleaner code - no need to check each parameter individually
-    """
-    product = db.query(Product).filter(Product.id == product_id).first()
+    stmt = select(Product).options(selectinload(Product.categories)).where(Product.id == product_id)
+    result = await db.execute(stmt)
+    product = result.scalar_one_or_none()
     if not product:
         return None
     
-    # Update only provided fields using model_dump(exclude_unset=True)
-    # This only includes fields that were explicitly set (not None defaults)
     update_data = product_update.model_dump(exclude_unset=True, exclude={'category_ids'})
-    
     for field, value in update_data.items():
         setattr(product, field, value)
     
-    # Update categories (many-to-many relationship) if provided
     if product_update.category_ids is not None:
-        categories = db.query(Category).filter(Category.id.in_(product_update.category_ids)).all()
+        stmt = select(Category).where(Category.id.in_(product_update.category_ids))
+        result = await db.execute(stmt)
+        categories = result.scalars().all()
         if len(categories) != len(product_update.category_ids):
             raise HTTPException(status_code=404, detail="One or more categories not found")
-        product.categories = categories
+        product.categories = list(categories)
     
-    db.commit()
-    db.refresh(product)
+    await db.commit()
+    await db.refresh(product)
     return product
 
 
-def soft_delete_product(db: Session, product_id: int) -> Optional[Product]:
-    """Soft delete a product by setting deleted_at timestamp"""
-    product = db.query(Product).filter(Product.id == product_id, Product.deleted_at.is_(None)).first()
+async def soft_delete_product(db: AsyncSession, product_id: int) -> Optional[Product]:
+    stmt = select(Product).where(Product.id == product_id, Product.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    product = result.scalar_one_or_none()
     if not product:
         return None
     
     product.deleted_at = datetime.utcnow()
-    db.commit()
-    db.refresh(product)
+    await db.commit()
+    await db.refresh(product)
     return product
 
 
-def restore_product(db: Session, product_id: int) -> Optional[Product]:
-    """Restore a soft-deleted product by clearing deleted_at"""
-    product = db.query(Product).filter(Product.id == product_id, Product.deleted_at.isnot(None)).first()
+async def restore_product(db: AsyncSession, product_id: int) -> Optional[Product]:
+    stmt = select(Product).where(Product.id == product_id, Product.deleted_at.isnot(None))
+    result = await db.execute(stmt)
+    product = result.scalar_one_or_none()
     if not product:
         return None
     
     product.deleted_at = None
-    db.commit()
-    db.refresh(product)
+    await db.commit()
+    await db.refresh(product)
     return product
 
 
-# ============ Category CRUD Operations ============
-def create_category(
-    db: Session,
+async def create_category(
+    db: AsyncSession,
     category_data: schemas.CategoryCreate
 ) -> Category:
-    existing_category = db.query(Category).filter(Category.name == category_data.name).first()
+    stmt = select(Category).where(Category.name == category_data.name)
+    result = await db.execute(stmt)
+    existing_category = result.scalar_one_or_none()
     if existing_category:
         raise HTTPException(status_code=400, detail="Category with this name already exists")
     
     category = Category(name=category_data.name, description=category_data.description)
     db.add(category)
-    db.commit()
-    db.refresh(category)
+    await db.commit()
+    await db.refresh(category)
     return category
 
 
-def get_category(db: Session, category_id: int, include_deleted: bool = False) -> Optional[Category]:
-    """Get a single category by ID"""
-    query = db.query(Category).filter(Category.id == category_id)
-    query = filter_not_deleted(query, Category, include_deleted)
-    return query.first()
+async def get_category(db: AsyncSession, category_id: int, include_deleted: bool = False) -> Optional[Category]:
+    stmt = select(Category).where(Category.id == category_id)
+    stmt = filter_not_deleted(stmt, Category, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_category_with_products(db: Session, category_id: int, include_deleted: bool = False) -> Optional[Category]:
-    """Get category with products loaded (many-to-many relationship)"""
-    query = (
-        db.query(Category)
+async def get_category_with_products(db: AsyncSession, category_id: int, include_deleted: bool = False) -> Optional[Category]:
+    stmt = (
+        select(Category)
         .options(selectinload(Category.products))
-        .filter(Category.id == category_id)
+        .where(Category.id == category_id)
     )
-    query = filter_not_deleted(query, Category, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Category, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_categories(
-    db: Session,
+async def get_categories(
+    db: AsyncSession,
     params: schemas.CategoryQueryParams
 ) -> tuple[List[Category], int]:
-    query = db.query(Category)
-    query = filter_not_deleted(query, Category, params.include_deleted)
+    stmt = select(Category)
+    stmt = filter_not_deleted(stmt, Category, params.include_deleted)
     
     if params.name:
-        query = query.filter(Category.name.ilike(f"%{params.name}%"))
+        stmt = stmt.where(Category.name.ilike(f"%{params.name}%"))
     
-    total = query.count()
-    categories = query.offset(params.skip).limit(params.limit).all()
+    count_stmt = select(func.count(Category.id))
+    count_stmt = filter_not_deleted(count_stmt, Category, params.include_deleted)
+    if params.name:
+        count_stmt = count_stmt.where(Category.name.ilike(f"%{params.name}%"))
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
     
-    return categories, total
+    stmt = stmt.offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    categories = result.scalars().all()
+    
+    return list(categories), total
 
 
-def get_categories_with_products(
-    db: Session,
+async def get_categories_with_products(
+    db: AsyncSession,
     params: schemas.PaginationQueryParams,
     include_deleted: bool = False
 ) -> tuple[List[Category], int]:
-    query = db.query(Category).options(selectinload(Category.products))
-    query = filter_not_deleted(query, Category, include_deleted)
-    total = query.count()
-    categories = query.offset(params.skip).limit(params.limit).all()
-    return categories, total
+    stmt = select(Category).options(selectinload(Category.products))
+    stmt = filter_not_deleted(stmt, Category, include_deleted)
+    
+    count_stmt = select(func.count(Category.id))
+    count_stmt = await filter_not_deleted(count_stmt, Category, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    categories = result.scalars().all()
+    return list(categories), total
 
 
-def soft_delete_category(db: Session, category_id: int) -> Optional[Category]:
-    """Soft delete a category by setting deleted_at timestamp"""
-    category = db.query(Category).filter(Category.id == category_id, Category.deleted_at.is_(None)).first()
+async def soft_delete_category(db: AsyncSession, category_id: int) -> Optional[Category]:
+    stmt = select(Category).where(Category.id == category_id, Category.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    category = result.scalar_one_or_none()
     if not category:
         return None
     
     category.deleted_at = datetime.utcnow()
-    db.commit()
-    db.refresh(category)
+    await db.commit()
+    await db.refresh(category)
     return category
 
 
-def restore_category(db: Session, category_id: int) -> Optional[Category]:
-    """Restore a soft-deleted category by clearing deleted_at"""
-    category = db.query(Category).filter(Category.id == category_id, Category.deleted_at.isnot(None)).first()
+async def restore_category(db: AsyncSession, category_id: int) -> Optional[Category]:
+    stmt = select(Category).where(Category.id == category_id, Category.deleted_at.isnot(None))
+    result = await db.execute(stmt)
+    category = result.scalar_one_or_none()
     if not category:
         return None
     
     category.deleted_at = None
-    db.commit()
-    db.refresh(category)
+    await db.commit()
+    await db.refresh(category)
     return category
 
 
-def create_order(
-    db: Session,
+async def create_order(
+    db: AsyncSession,
     order_data: schemas.OrderCreate
 ) -> Order:
-    user = db.query(User).filter(User.id == order_data.user_id).first()
+    stmt = select(User).where(User.id == order_data.user_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
@@ -407,140 +456,173 @@ def create_order(
         status=order_data.status
     )
     db.add(order)
-    db.flush()
+    await db.flush()
     
+    # Merge duplicate products by summing quantities
+    # Use dict to track product_id -> (quantity, price)
+    items_dict = {}
     for item_data in order_data.items:
-        product = db.query(Product).filter(Product.id == item_data.product_id).first()
-        if not product:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Product with id {item_data.product_id} not found"
+        if item_data.product_id in items_dict:
+            # If product already exists, sum quantities (use first price)
+            items_dict[item_data.product_id] = (
+                items_dict[item_data.product_id][0] + item_data.quantity,
+                items_dict[item_data.product_id][1]  # Keep first price
             )
-        
+        else:
+            items_dict[item_data.product_id] = (item_data.quantity, item_data.price)
+    
+    # Validate all products exist
+    product_ids = list(items_dict.keys())
+    stmt = select(Product).where(Product.id.in_(product_ids))
+    result = await db.execute(stmt)
+    products = result.scalars().all()
+    found_product_ids = {p.id for p in products}
+    
+    missing_ids = set(product_ids) - found_product_ids
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Products with ids {list(missing_ids)} not found"
+        )
+    
+    # Create order items
+    for product_id, (quantity, price) in items_dict.items():
         order_item = OrderItem(
             order_id=order.id,
-            product_id=item_data.product_id,
-            quantity=item_data.quantity,
-            price=item_data.price
+            product_id=product_id,
+            quantity=quantity,
+            price=price
         )
         db.add(order_item)
     
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
     return order
 
 
-def get_order(db: Session, order_id: int, include_deleted: bool = False) -> Optional[Order]:
-    """Get a single order by ID"""
-    query = db.query(Order).filter(Order.id == order_id)
-    query = filter_not_deleted(query, Order, include_deleted)
-    return query.first()
+async def get_order(db: AsyncSession, order_id: int, include_deleted: bool = False) -> Optional[Order]:
+    stmt = select(Order).where(Order.id == order_id)
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_order_with_items(db: Session, order_id: int, include_deleted: bool = False) -> Optional[Order]:
-    """Get order with order items loaded (one-to-many relationship)"""
-    query = (
-        db.query(Order)
+async def get_order_with_items(db: AsyncSession, order_id: int, include_deleted: bool = False) -> Optional[Order]:
+    stmt = (
+        select(Order)
         .options(selectinload(Order.items))
-        .filter(Order.id == order_id)
+        .where(Order.id == order_id)
     )
-    query = filter_not_deleted(query, Order, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_order_with_items_and_products(db: Session, order_id: int, include_deleted: bool = False) -> Optional[Order]:
-    """
-    Get order with items and products loaded.
-    
-    Demonstrates:
-    - One-to-Many: Order -> OrderItems
-    - Many-to-One: OrderItem -> Product
-    - Many-to-Many through association object: Order <-> Product (via OrderItem)
-    """
-    query = (
-        db.query(Order)
+async def get_order_with_items_and_products(db: AsyncSession, order_id: int, include_deleted: bool = False) -> Optional[Order]:
+    stmt = (
+        select(Order)
         .options(
             selectinload(Order.items).joinedload(OrderItem.product)
         )
-        .filter(Order.id == order_id)
+        .where(Order.id == order_id)
     )
-    query = filter_not_deleted(query, Order, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_order_full(db: Session, order_id: int, include_deleted: bool = False) -> Optional[Order]:
-    """
-    Get order with user, items, and products (all relationships).
-    
-    Demonstrates loading multiple relationship levels:
-    - Order -> User (many-to-one)
-    - Order -> OrderItems (one-to-many)
-    - OrderItem -> Product (many-to-one)
-    """
-    query = (
-        db.query(Order)
+async def get_order_full(db: AsyncSession, order_id: int, include_deleted: bool = False) -> Optional[Order]:
+    stmt = (
+        select(Order)
         .options(
             joinedload(Order.user),
             selectinload(Order.items).joinedload(OrderItem.product)
         )
-        .filter(Order.id == order_id)
+        .where(Order.id == order_id)
     )
-    query = filter_not_deleted(query, Order, include_deleted)
-    return query.first()
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
-def get_orders(
-    db: Session,
+async def get_orders(
+    db: AsyncSession,
     params: schemas.OrderQueryParams
 ) -> tuple[List[Order], int]:
-    query = db.query(Order)
-    query = filter_not_deleted(query, Order, params.include_deleted)
+    stmt = select(Order)
+    stmt = filter_not_deleted(stmt, Order, params.include_deleted)
     
     if params.user_id is not None:
-        query = query.filter(Order.user_id == params.user_id)
+        stmt = stmt.where(Order.user_id == params.user_id)
     
     if params.status is not None:
-        query = query.filter(Order.status == params.status)
+        stmt = stmt.where(Order.status == params.status)
     
-    total = query.count()
-    orders = query.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit).all()
+    count_stmt = select(func.count(Order.id))
+    count_stmt = filter_not_deleted(count_stmt, Order, params.include_deleted)
+    if params.user_id is not None:
+        count_stmt = count_stmt.where(Order.user_id == params.user_id)
+    if params.status is not None:
+        count_stmt = count_stmt.where(Order.status == params.status)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
     
-    return orders, total
+    stmt = stmt.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+    
+    return list(orders), total
 
 
-def get_orders_with_items(
-    db: Session,
+async def get_orders_with_items(
+    db: AsyncSession,
     params: schemas.PaginationQueryParams,
     include_deleted: bool = False
 ) -> tuple[List[Order], int]:
-    query = db.query(Order).options(selectinload(Order.items))
-    query = filter_not_deleted(query, Order, include_deleted)
-    total = query.count()
-    orders = query.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit).all()
-    return orders, total
+    stmt = select(Order).options(selectinload(Order.items))
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    
+    count_stmt = select(func.count(Order.id))
+    count_stmt = await filter_not_deleted(count_stmt, Order, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+    return list(orders), total
 
 
-def get_orders_with_items_and_products(
-    db: Session,
+async def get_orders_with_items_and_products(
+    db: AsyncSession,
     params: schemas.PaginationQueryParams,
     include_deleted: bool = False
 ) -> tuple[List[Order], int]:
-    query = (
-        db.query(Order)
+    stmt = (
+        select(Order)
         .options(selectinload(Order.items).joinedload(OrderItem.product))
     )
-    query = filter_not_deleted(query, Order, include_deleted)
-    total = query.count()
-    orders = query.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit).all()
-    return orders, total
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    
+    count_stmt = select(func.count(Order.id))
+    count_stmt = await filter_not_deleted(count_stmt, Order, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.order_by(Order.created_at.desc()).offset(params.skip).limit(params.limit)
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+    return list(orders), total
 
 
-def update_order(
-    db: Session,
+async def update_order(
+    db: AsyncSession,
     order_id: int,
     order_update: schemas.OrderUpdate
 ) -> Optional[Order]:
-    order = db.query(Order).filter(Order.id == order_id, Order.deleted_at.is_(None)).first()
+    stmt = select(Order).where(Order.id == order_id, Order.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    order = result.scalar_one_or_none()
     if not order:
         return None
     
@@ -548,68 +630,82 @@ def update_order(
     for field, value in update_data.items():
         setattr(order, field, value)
     
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
     return order
 
 
-def soft_delete_order(db: Session, order_id: int) -> Optional[Order]:
-    """Soft delete an order by setting deleted_at timestamp"""
-    order = db.query(Order).filter(Order.id == order_id, Order.deleted_at.is_(None)).first()
+async def soft_delete_order(db: AsyncSession, order_id: int) -> Optional[Order]:
+    stmt = select(Order).where(Order.id == order_id, Order.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    order = result.scalar_one_or_none()
     if not order:
         return None
     
     order.deleted_at = datetime.utcnow()
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
     return order
 
 
-def restore_order(db: Session, order_id: int) -> Optional[Order]:
-    """Restore a soft-deleted order by clearing deleted_at"""
-    order = db.query(Order).filter(Order.id == order_id, Order.deleted_at.isnot(None)).first()
+async def restore_order(db: AsyncSession, order_id: int) -> Optional[Order]:
+    stmt = select(Order).where(Order.id == order_id, Order.deleted_at.isnot(None))
+    result = await db.execute(stmt)
+    order = result.scalar_one_or_none()
     if not order:
         return None
     
     order.deleted_at = None
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
     return order
 
 
-def get_user_orders(
-    db: Session,
+async def get_user_orders(
+    db: AsyncSession,
     user_id: int,
     skip: int = 0,
     limit: int = 10,
     include_deleted: bool = False
 ) -> tuple[List[Order], int]:
-    """Get all orders for a specific user"""
-    query = db.query(Order).filter(Order.user_id == user_id)
-    query = filter_not_deleted(query, Order, include_deleted)
-    total = query.count()
-    orders = query.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
-    return orders, total
+    stmt = select(Order).where(Order.user_id == user_id)
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    
+    count_stmt = select(func.count(Order.id)).where(Order.user_id == user_id)
+    count_stmt = await filter_not_deleted(count_stmt, Order, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+    return list(orders), total
 
 
-def get_product_orders(
-    db: Session,
+async def get_product_orders(
+    db: AsyncSession,
     product_id: int,
     skip: int = 0,
     limit: int = 10,
     include_deleted: bool = False
 ) -> tuple[List[Order], int]:
-    """
-    Get all orders containing a specific product.
-    
-    Demonstrates querying many-to-many relationship through association object.
-    """
-    query = (
-        db.query(Order)
+    stmt = (
+        select(Order)
         .join(OrderItem)
-        .filter(OrderItem.product_id == product_id)
+        .where(OrderItem.product_id == product_id)
     )
-    query = filter_not_deleted(query, Order, include_deleted)
-    total = query.count()
-    orders = query.order_by(Order.created_at.desc()).offset(skip).limit(limit).all()
-    return orders, total
+    stmt = filter_not_deleted(stmt, Order, include_deleted)
+    
+    count_stmt = (
+        select(func.count(Order.id))
+        .join(OrderItem)
+        .where(OrderItem.product_id == product_id)
+    )
+    count_stmt = await filter_not_deleted(count_stmt, Order, include_deleted)
+    total_result = await db.execute(count_stmt)
+    total = total_result.scalar()
+    
+    stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    orders = result.scalars().all()
+    return list(orders), total
