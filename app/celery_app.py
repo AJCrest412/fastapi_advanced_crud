@@ -7,8 +7,10 @@ load_dotenv()
 # Create Celery instance
 celery_app = Celery(
     "fastapi_celery",
-    broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-    backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    # broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    # backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    broker=os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672//"),
+    backend=os.getenv("RABBITMQ_URL_BE", "amqp://guest:guest@localhost:5672//"),
     include=["app.tasks"]
 )
 

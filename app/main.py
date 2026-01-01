@@ -99,7 +99,12 @@ async def create_user(
     created_user = await crud.create_user(db, user_data=user)
     
     # Trigger background task to send welcome email
-    send_welcome_email.delay(user.email, created_user.id)
+    # Wrap in try-except to prevent task errors from affecting user creation
+    try:
+        send_welcome_email.delay(user.email, created_user.id)
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"Failed to queue welcome email task: {e}")
     
     return created_user
 
@@ -372,12 +377,17 @@ async def create_order(
             items_count = len(order_with_items.items)
             
             # Trigger background task to send order confirmation email
-            send_order_confirmation_email.delay(
-                user.email,
-                created_order.id,
-                total_amount,
-                items_count
-            )
+            # Wrap in try-except to prevent task errors from affecting order creation
+            try:
+                send_order_confirmation_email.delay(
+                    user.email,
+                    created_order.id,
+                    total_amount,
+                    items_count
+                )
+            except Exception as e:
+                # Log error but don't fail the request
+                print(f"Failed to queue order confirmation email task: {e}")
     
     return created_order
 

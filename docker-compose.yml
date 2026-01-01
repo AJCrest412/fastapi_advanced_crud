@@ -22,6 +22,17 @@ services:
     ports:
       - "6379:6379"
 
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # AMQP port
+      - "15672:15672" # Management UI port
+
   api:
     build: .
     container_name: fastapi_api
@@ -32,7 +43,8 @@ services:
       - "8000:8000"
     depends_on:
       - mysql
-      - redis
+      # - redis
+      - rabbitmq
 
   celery-worker:
     build: .
@@ -43,6 +55,7 @@ services:
     depends_on:
       - mysql
       - redis
+      - rabbitmq
 
 volumes:
   mysql_data:
