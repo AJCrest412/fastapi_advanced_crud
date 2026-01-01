@@ -1,10 +1,11 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from app.database import get_db
 from app import crud, schemas
 from app.tasks import send_welcome_email, send_order_confirmation_email
+from app.rate_limiter import limiter, setup_rate_limiter
 
 
 def get_product_query_params(
@@ -89,6 +90,9 @@ app = FastAPI(
     description="Demonstrates SQLAlchemy relationships, filters, and pagination",
     version="1.0.0"
 )
+
+# Setup rate limiting
+setup_rate_limiter(app)
 
 
 @app.post("/users", response_model=schemas.UserResponse, status_code=201, tags=["Users"])

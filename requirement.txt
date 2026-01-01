@@ -7,3 +7,5 @@ cryptography
 celery[redis]
 celery[rabbitmq]
 python-dotenv
+slowapi
+redis
