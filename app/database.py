@@ -1,6 +1,13 @@
+import os
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from dotenv import load_dotenv
 
-DATABASE_URL = "mysql+aiomysql://demo_user:demo_pass@localhost:3306/demo_db"
+load_dotenv()
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql+aiomysql://demo_user:demo_pass@localhost:3306/demo_db"
+)
 
 engine = create_async_engine(
     DATABASE_URL,

@@ -4,6 +4,7 @@ from typing import Optional
 
 from app.database import get_db
 from app import crud, schemas
+from app.tasks import send_welcome_email, send_order_confirmation_email
 
 
 def get_product_query_params(
@@ -95,7 +96,12 @@ async def create_user(
     user: schemas.UserCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    return await crud.create_user(db, user_data=user)
+    created_user = await crud.create_user(db, user_data=user)
+    
+    # Trigger background task to send welcome email
+    send_welcome_email.delay(user.email, created_user.id)
+    
+    return created_user
 
 
 @app.get("/users", response_model=schemas.PaginatedUsers, tags=["Users"])
@@ -354,7 +360,26 @@ async def create_order(
     order: schemas.OrderCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    return await crud.create_order(db, order_data=order)
+    created_order = await crud.create_order(db, order_data=order)
+    
+    # Get user email for order confirmation
+    user = await crud.get_user(db, created_order.user_id)
+    if user:
+        # Calculate total amount and items count
+        order_with_items = await crud.get_order_with_items(db, created_order.id)
+        if order_with_items:
+            total_amount = sum(item.quantity * item.price for item in order_with_items.items)
+            items_count = len(order_with_items.items)
+            
+            # Trigger background task to send order confirmation email
+            send_order_confirmation_email.delay(
+                user.email,
+                created_order.id,
+                total_amount,
+                items_count
+            )
+    
+    return created_order
 
 
 @app.get("/orders", response_model=schemas.PaginatedOrders, tags=["Orders"])
